@@ -4,7 +4,6 @@ import java.util.*;
 
 public class SupervisoraDeConexao extends Thread
 {
-    private double              valor=0;
     private Parceiro            usuario;
     private Socket              conexao;
     private ArrayList<Parceiro> usuarios;
@@ -81,32 +80,6 @@ public class SupervisoraDeConexao extends Thread
 
                 if (comunicado==null)
                     return;
-                else if (comunicado instanceof PedidoDeOperacao)
-                {
-					PedidoDeOperacao pedidoDeOperacao = (PedidoDeOperacao)comunicado;
-					
-					switch (pedidoDeOperacao.getOperacao())
-					{
-						case '+':
-						    this.valor += pedidoDeOperacao.getValor();
-						    break;
-						    
-						case '-':
-						    this.valor -= pedidoDeOperacao.getValor();
-						    break;
-						    
-						case '*':
-						    this.valor *= pedidoDeOperacao.getValor();
-						    break;
-						    
-						case '/':
-						    this.valor /= pedidoDeOperacao.getValor();
-                    }
-                }
-                else if (comunicado instanceof PedidoDeResultado)
-                {
-                    this.usuario.receba (new Resultado (this.valor));
-                }
                 else if (comunicado instanceof PedidoParaSair)
                 {
                     synchronized (this.usuarios)

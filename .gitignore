@@ -3,3 +3,7 @@ target/
 .idea/
 .vscode/
 .env
+
+# compilados
+*.class
+out/

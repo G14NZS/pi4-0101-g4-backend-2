@@ -49,6 +49,18 @@ public class Servidor
             catch (Exception erro)
             {}
 
+            if (comando==null) // sem teclado (ex.: Docker sem -it, ou segundo plano)
+            {
+                System.out.println ("Sem entrada de teclado; o servidor segue ativo ate o processo ser encerrado.\n");
+                try
+                {
+                    Thread.sleep (Long.MAX_VALUE);
+                }
+                catch (InterruptedException erro)
+                {}
+                continue;
+            }
+
             if (comando.toLowerCase().equals("desativar"))
             {
                 if (agendador!=null)
@@ -99,7 +111,16 @@ public class Servidor
         try
         {
             ConexaoComBackend1 backend1 =
-            new ConexaoComBackend1 (host, Integer.parseInt (porta));
+            new ConexaoComBackend1 (host, Integer.parseInt (porta), chave);
+
+            try
+            {
+                backend1.ping (); // so avisa; o agendador tenta de novo a cada ciclo
+            }
+            catch (Exception erro)
+            {
+                System.err.println ("Backend 1 nao respondeu ao ping (" + erro.getMessage() + "); o agendador tenta no proximo ciclo.\n");
+            }
 
             TwilioSms twilio =
             new TwilioSms (Servidor.variavel ("TWILIO_ACCOUNT_SID", ""),
@@ -107,7 +128,7 @@ public class Servidor
                            Servidor.variavel ("TWILIO_FROM",        ""));
 
             Agendador agendador =
-            new Agendador (backend1, twilio, chave, Agendador.INTERVALO_PADRAO);
+            new Agendador (backend1, twilio, Agendador.INTERVALO_PADRAO);
             agendador.start ();
 
             System.out.println ("Agendador de lembretes ativo (Backend 1 em " + host + ":" + porta + ", a cada 15 minutos)\n");
