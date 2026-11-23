@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  testes:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +20,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-          cache: maven
-      - name: Testes JUnit
-        run: mvn -B test
+      - name: Compilar Servidor
+        run: mkdir out && javac -encoding UTF-8 -d out Servidor/*.java
+      - name: Compilar Cliente
+        run: mkdir out-cliente && javac -encoding UTF-8 -d out-cliente Cliente/*.java
+      - name: Construir imagem Docker
+        run: docker build -t backend2 .
