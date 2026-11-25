@@ -3,4 +3,8 @@ target/
 .idea/
 .vscode/
 .env
+
+# compilados
 *.class
+out/
+out-cliente/

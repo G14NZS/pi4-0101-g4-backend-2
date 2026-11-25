@@ -1,26 +1,35 @@
 import java.io.*;
 import java.net.*;
+import java.nio.charset.*;
+import java.time.*;
+import java.time.format.*;
+import java.util.*;
 
 /**
- * Conexao por socket com o Backend 1, usada pelo Agendador (CT12 e CT13).
- * Abre a conexao quando precisa; se o socket cair (ou o Backend 1 nao responder a tempo),
- * descarta a conexao para que o proximo pedido conecte de novo, sem reiniciar nenhum backend.
+ * Cliente por socket TCP do Backend 1 (CT12 e CT13). Protocolo: uma linha JSON por mensagem.
+ *   pedido   {"operacao":..., "dados":{...}, "chaveInterna":...}
+ *   resposta {"ok":true,"dados":{...}}  ou  {"ok":false,"erro":CODIGO,"mensagem":texto}
+ *
+ * Cada chamada abre a sua conexao e a fecha ao terminar: o Backend 1 derruba conexoes ociosas
+ * por mais de 10 s e o ciclo do agendador e de 15 minutos, entao nao ha conexao para manter viva.
  */
 public class ConexaoComBackend1
 {
     public static final int TIMEOUT_PADRAO = 10_000; // ms
 
-    private String   host;
-    private int      porta;
-    private int      timeoutMs;
-    private Parceiro backend1 = null;
+    private static final DateTimeFormatter DATA_HORA = DateTimeFormatter.ofPattern ("yyyy-MM-dd'T'HH:mm:ss");
 
-    public ConexaoComBackend1 (String host, int porta) throws Exception
+    private String host;
+    private int    porta;
+    private String chaveInterna;
+    private int    timeoutMs;
+
+    public ConexaoComBackend1 (String host, int porta, String chaveInterna) throws Exception
     {
-        this (host, porta, TIMEOUT_PADRAO);
+        this (host, porta, chaveInterna, TIMEOUT_PADRAO);
     }
 
-    public ConexaoComBackend1 (String host, int porta, int timeoutMs) throws Exception
+    public ConexaoComBackend1 (String host, int porta, String chaveInterna, int timeoutMs) throws Exception
     {
         if (host==null || host.isBlank())
             throw new Exception ("Host ausente");
@@ -28,78 +37,102 @@ public class ConexaoComBackend1
         if (porta<=0 || porta>65535)
             throw new Exception ("Porta invalida");
 
-        this.host      = host;
-        this.porta     = porta;
-        this.timeoutMs = timeoutMs;
+        if (chaveInterna==null || chaveInterna.isBlank())
+            throw new Exception ("Chave interna ausente");
+
+        this.host         = host;
+        this.porta        = porta;
+        this.chaveInterna = chaveInterna;
+        this.timeoutMs    = timeoutMs;
     }
 
-    /** Manda o pedido e espera a resposta. Qualquer falha de comunicacao derruba a conexao e e relancada. */
-    public synchronized Comunicado peca (Comunicado pedido) throws Exception
+    /** Operacao "ping": confirma que o Backend 1 responde e aceita a chave. */
+    public void ping () throws IOException, ErroBackend1
     {
-        try
+        this.chame ("ping", "{}");
+    }
+
+    /** CT12: lembretes cujo agendamento comeca ate o instante dado e ainda nao foram registrados. */
+    public ArrayList<Lembrete> listeLembretesPendentes (LocalDateTime ate) throws IOException, ErroBackend1
+    {
+        Map<?,?> dados = this.chame ("listarLembretesPendentes",
+                                     "{\"ate\":" + Json.texto (ate.format (DATA_HORA)) + "}");
+
+        ArrayList<Lembrete> lembretes = new ArrayList<Lembrete> ();
+        Object lista = dados.get ("lembretes");
+        if (!(lista instanceof List))
+            throw new IOException ("Resposta do Backend 1 sem a lista de lembretes");
+
+        for (Object item : (List<?>)lista)
         {
-            if (this.backend1==null)
-                this.conecte ();
-
-            this.backend1.receba (pedido);
-            Comunicado resposta = this.backend1.envie ();
-
-            if (resposta==null || resposta instanceof ComunicadoDeDesligamento)
-                throw new Exception ("Backend 1 encerrou a conexao");
-
-            return resposta;
+            try
+            {
+                lembretes.add (Lembrete.doJson ((Map<?,?>)item));
+            }
+            catch (Exception erro)
+            {
+                System.err.println ("Lembrete ignorado (dados invalidos): " + erro.getMessage());
+            }
         }
-        catch (Exception erro)
-        {
-            this.descarte ();
-            throw erro;
-        }
+        return lembretes;
     }
 
-    public synchronized boolean estaConectado ()
+    /** CT13: registra o resultado do envio ("enviado" ou "falhou"). */
+    public void registreLembrete (int idAgendamento, String resultado) throws IOException, ErroBackend1
     {
-        return this.backend1!=null;
+        this.chame ("registrarLembrete",
+                    "{\"agendamentoId\":" + idAgendamento + ",\"resultado\":" + Json.texto (resultado) + "}");
     }
 
-    public synchronized void descarte ()
+    /** Devolve o campo "dados" da resposta; IOException se nao deu para falar, ErroBackend1 se foi recusado. */
+    private Map<?,?> chame (String operacao, String dadosJson) throws IOException, ErroBackend1
     {
-        if (this.backend1==null)
-            return;
+        String pedido = "{\"operacao\":" + Json.texto (operacao) +
+                        ",\"dados\":"    + dadosJson +
+                        ",\"chaveInterna\":" + Json.texto (this.chaveInterna) + "}";
 
-        try
-        {
-            this.backend1.adeus ();
-        }
-        catch (Exception erro)
-        {} // so tentando fechar; a conexao ja pode estar morta
-
-        this.backend1 = null;
-    }
-
-    private void conecte () throws Exception
-    {
-        Socket conexao = new Socket ();
-        try
+        String linha;
+        try (Socket conexao = new Socket ())
         {
             conexao.connect      (new InetSocketAddress (this.host, this.porta), this.timeoutMs);
             conexao.setSoTimeout (this.timeoutMs); // sem resposta em 10 s conta como queda
 
-            ObjectOutputStream transmissor = new ObjectOutputStream (conexao.getOutputStream());
-            transmissor.flush ();
-            ObjectInputStream  receptor    = new ObjectInputStream  (conexao.getInputStream ());
+            BufferedWriter saida   = new BufferedWriter (new OutputStreamWriter (conexao.getOutputStream(), StandardCharsets.UTF_8));
+            BufferedReader entrada = new BufferedReader (new InputStreamReader  (conexao.getInputStream (), StandardCharsets.UTF_8));
 
-            this.backend1 = new Parceiro (conexao, receptor, transmissor);
+            saida.write (pedido);
+            saida.write ("\n");
+            saida.flush ();
+
+            linha = entrada.readLine ();
+        }
+
+        if (linha==null)
+            throw new IOException ("O Backend 1 fechou a conexao sem responder");
+
+        Object resposta;
+        try
+        {
+            resposta = Json.leia (linha);
         }
         catch (Exception erro)
         {
-            try
-            {
-                conexao.close ();
-            }
-            catch (Exception falha)
-            {}
-
-            throw new Exception ("Nao foi possivel conectar ao Backend 1 em " + this.host + ":" + this.porta);
+            throw new IOException ("Resposta invalida do Backend 1: " + erro.getMessage());
         }
+
+        if (!(resposta instanceof Map))
+            throw new IOException ("Resposta invalida do Backend 1");
+
+        Map<?,?> mapa = (Map<?,?>)resposta;
+        if (Boolean.TRUE.equals (mapa.get ("ok")))
+        {
+            Object dados = mapa.get ("dados");
+            return dados instanceof Map ? (Map<?,?>)dados : new HashMap<Object,Object> ();
+        }
+
+        Object erro     = mapa.get ("erro");
+        Object mensagem = mapa.get ("mensagem");
+        throw new ErroBackend1 (erro instanceof String ? (String)erro : "ERRO_DESCONHECIDO",
+                                mensagem instanceof String ? (String)mensagem : "");
     }
 }
