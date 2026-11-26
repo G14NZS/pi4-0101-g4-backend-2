@@ -19,6 +19,7 @@ public class TwilioSms implements ServicoDeMensagens
 
     private static final Pattern SID    = Pattern.compile ("\"sid\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern CODIGO = Pattern.compile ("\"code\"\\s*:\\s*(\\d+)");
+    private static final Pattern MENSAGEM = Pattern.compile ("\"message\"\\s*:\\s*\"([^\"]*)\"");
 
     private String     urlBase;
     private String     accountSid;
@@ -50,9 +51,14 @@ public class TwilioSms implements ServicoDeMensagens
         if (this.accountSid.isBlank() || this.authToken.isBlank() || this.de.isBlank())
             throw new FalhaTemporariaDeEnvio ("Twilio nao configurado (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM)");
 
+        // Conta trial do Twilio so aceita modelos prontos no Body (erro 572006 com texto livre).
+        // Com TWILIO_MODELO_TRIAL (ex.: sms_appointment_reminders), manda o modelo no lugar do texto.
+        String modeloTrial = System.getenv ("TWILIO_MODELO_TRIAL");
+        String body        = modeloTrial==null || modeloTrial.isBlank() ? texto : modeloTrial.trim();
+
         String corpo = "To="    + codifique (para)    +
                        "&From=" + codifique (this.de) +
-                       "&Body=" + codifique (texto);
+                       "&Body=" + codifique (body);
 
         String credenciais = Base64.getEncoder ().encodeToString (
                              (this.accountSid + ":" + this.authToken).getBytes (StandardCharsets.UTF_8));
@@ -103,7 +109,9 @@ public class TwilioSms implements ServicoDeMensagens
             throw new FalhaDefinitivaDeEnvio (codigo, "Twilio recusou o telefone (codigo " + codigo + ")");
 
         // 401/20003 (credencial errada), 5xx e qualquer outro caso: tenta de novo no proximo ciclo
-        throw new FalhaTemporariaDeEnvio ("Twilio respondeu HTTP " + status + (codigo!=0 ? " (codigo " + codigo + ")" : ""));
+        Matcher msg = MENSAGEM.matcher (json);
+        throw new FalhaTemporariaDeEnvio ("Twilio respondeu HTTP " + status + (codigo!=0 ? " (codigo " + codigo + ")" : "") +
+                                          (msg.find() ? ": " + msg.group(1) : ""));
     }
 
     private static String codifique (String valor)
